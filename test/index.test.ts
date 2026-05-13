@@ -1,9 +1,10 @@
-import {remark} from 'remark'
+import { remark } from 'remark'
 import remarkParse from 'remark-parse';
 import remarkRehype from 'remark-rehype'
 import rehypeStringify from 'rehype-stringify'
 import { remarkAlert } from '../src/index.js';
-import remarkAlertDefault  from '../src/index.js';
+import remarkAlertDefault from '../src/index.js';
+import { Blockquote, Nodes, Parent, Root } from 'mdast';
 
 it('Alert `NOTE` test case 1', async () => {
   const markdown = `> [!NOTE]  \n> Useful information that users should know, even when skimming content.`;
@@ -167,4 +168,92 @@ it('Alert `classNames` option test case 5 - combined with tagName', async () => 
 </blockquote>`;
   const htmlStr = remark().use(remarkParse).use(remarkAlert, { tagName: "blockquote", classNames: "custom-blockquote danger" }).use(remarkRehype).use(rehypeStringify).processSync(markdown).toString()
   expect(htmlStr).toEqual(html);
+});
+
+/**
+  * The type, slice, and children of a node in a form that makes assertions easy.
+  */
+type NodeSlice = [string, string, NodeSlice[]];
+
+/**
+  * The collection of strings that are relevant to an alert
+  */
+type AlertStrings = {
+  markdown: string,
+  blockquote: string,
+  header: string,
+  type: string,
+  title: string,
+  paragraph: string,
+}
+
+/**
+  * Find the blockquote subtree within a tree of MDAST nodes
+  */
+function findBlockquote(tree: Node | Parent): Blockquote {
+  if (!('children' in tree)) throw new Error('tree has no children');
+  const blockquote = tree.children.find((c) => c.type === 'blockquote');
+  if (!blockquote) throw new Error('no blockquote found in tree');
+  return blockquote;
+}
+
+/**
+  * Collect text slices of nodes based on their positions.
+  */
+function nodesToSlices(node: Nodes , source: string): NodeSlice {
+  return [
+    node.type,
+    source.slice(node.position?.start.offset, node.position?.end.offset),
+    ((('children' in node) && node.children) || []).map((child) => nodesToSlices(child, source)),
+  ];
+}
+
+/**
+  * Convert the alert strings into the expected NodeSlice-based structure.
+  */
+function stringsToExpectedSlices(alert: AlertStrings) {
+  return ["blockquote", alert.blockquote, [
+    ["paragraph", alert.header, [
+      ["emphasis", alert.type, [
+        ["emphasis", alert.type, []],
+      ]],
+      ["text", alert.title, []],
+    ]],
+    ["paragraph", alert.paragraph, [
+      ["text", alert.paragraph, []],
+    ]],
+  ]];
+}
+
+it('Alert node position test case 1 - regular titles', () => {
+  const type = "NOTE";
+  const header = `[!${type}]`;
+  const paragraph = "> Useful information that users should know, even when skimming content.";
+  const blockquote = `> ${header}\n${paragraph}`;
+  const markdown = `Lead paragraph\n\n${blockquote}`;
+  const processor = remark().use(remarkParse).use(remarkAlert);
+  const tree = processor.runSync(processor.parse(markdown));
+  const alert = findBlockquote(tree);
+  const alertSlices = nodesToSlices(alert, markdown);
+  const expectedSlices = stringsToExpectedSlices({
+      markdown, blockquote, header, type, title: type, paragraph
+  });
+  expect(alertSlices).toEqual(expectedSlices);
+});
+
+it('Alert node position test case 2 - `legacyTitle`', () => {
+  const type = "CAUTION";
+  const title = "警告";
+  const header = `[!${type}/${title}]`;
+  const paragraph = "> Urgent info that needs immediate user attention to avoid problems.";
+  const blockquote = `> ${header}\n${paragraph}`;
+  const markdown = `\n${blockquote}`;
+  const processor = remark().use(remarkParse).use(remarkAlert, { legacyTitle: true });
+  const tree = processor.runSync(processor.parse(markdown));
+  const alert = findBlockquote(tree);
+  const alertSlices = nodesToSlices(alert, markdown);
+  const expectedSlices = stringsToExpectedSlices({
+      markdown, blockquote, header, type, title, paragraph
+  });
+  expect(alertSlices).toEqual(expectedSlices);
 });
