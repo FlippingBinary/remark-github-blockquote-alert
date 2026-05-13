@@ -1,9 +1,10 @@
 import { visit } from 'unist-util-visit';
 import type { Plugin } from 'unified';
 import type { Root, PhrasingContent } from "mdast";
+import type { Position, Point } from "unist";
 
-const alertRegex = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i;
-const alertLegacyRegex = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)(\/.*)?\]/i;
+const alertRegex = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/id;
+const alertLegacyRegex = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)(\/.*)?\]/id;
 
 type Option = {
   /**
@@ -34,6 +35,9 @@ export const remarkAlert: Plugin<[Option?], Root> = ({ legacyTitle = false, tagN
       let alertType = '';
       let title = '';
       let isNext = true;
+      let headerPosition: Position | undefined;
+      let iconPosition: Position | undefined;
+      let titlePosition: Position | undefined;
       let child = node.children.map((item) => {
         if (isNext && item.type === "paragraph") {
           const firstNode = item.children[0];
@@ -45,9 +49,48 @@ export const remarkAlert: Plugin<[Option?], Root> = ({ legacyTitle = false, tagN
             alertType = match[1].toLocaleLowerCase();
             title = legacyTitle ? match[2] || alertType.toLocaleUpperCase() : alertType.toLocaleUpperCase();
             if (text.includes('\n')) {
+              const bodyValue = text.replace(reg, '').replace(/^\n+/, '');
+              let bodyPosition: Position | undefined;
+              if (item.position && match.indices && firstNode.position) {
+                const position = firstNode.position;
+                const nodeStart = position.start.offset ?? 0;
+                const [ headerStart, headerEnd ] = match.indices[0];
+                const [ iconStart, iconEnd ] = match.indices[1];
+                headerPosition = getPosition(position, text, nodeStart, headerStart, headerEnd);
+                iconPosition = getPosition(position, text, nodeStart, iconStart, iconEnd);
+                if (legacyTitle && match.indices[2]) {
+                  const [startOffset, endOffset] = match.indices[2];
+                  titlePosition = getPosition(position, text, nodeStart, startOffset + 1, endOffset);
+                } else {
+                  titlePosition = {
+                    start: { ...iconPosition.start },
+                    end: { ...iconPosition.end },
+                  }
+                }
+                const bodyStart = { ...headerPosition.end };
+                const bodyEnd = { ...position.end };
+                if (bodyStart.offset !== undefined) {
+                  bodyStart.column++;
+                  bodyStart.offset++;
+                  let localBody = bodyStart.offset - nodeStart;
+                  while (text.charAt(localBody) === '\n') {
+                    bodyStart.column = 1;
+                    bodyStart.line++;
+                    bodyStart.offset++;
+                    localBody++;
+                  }
+                }
+                item.position.start = { ...bodyStart };
+                bodyPosition = {
+                  start: bodyStart,
+                  end: bodyEnd,
+                };
+              }
+
               item.children[0] = {
                 type: 'text',
-                value: text.replace(reg, '').replace(/^\n+/, ''),
+                position: bodyPosition,
+                value: bodyValue,
               };
             }
 
@@ -78,9 +121,10 @@ export const remarkAlert: Plugin<[Option?], Root> = ({ legacyTitle = false, tagN
         child.unshift({
           type: "paragraph",
           children: [
-            getAlertIcon(alertType as IconType),
+            getAlertIcon(alertType as IconType, iconPosition),
             {
               type: "text",
+              position: titlePosition,
               value: title.replace(/^\//, ''),
             }
           ],
@@ -89,7 +133,8 @@ export const remarkAlert: Plugin<[Option?], Root> = ({ legacyTitle = false, tagN
               className: "markdown-alert-title",
               dir: "auto"
             }
-          }
+          },
+          position: headerPosition
         })
       }
       node.children = [...child];
@@ -99,7 +144,37 @@ export const remarkAlert: Plugin<[Option?], Root> = ({ legacyTitle = false, tagN
 
 export default remarkAlert;
 
-export function getAlertIcon(type: IconType): PhrasingContent {
+function getPosition(position: Position, text: string, nodeStart: number, localStart: number, localEnd: number): Position {
+  if (position.start.offset === undefined) return position;
+
+  const start = getPoint(position.start as Required<Point>, text, nodeStart, localStart);
+  const end = getPoint(start, text, nodeStart, localEnd);
+
+  return { start, end };
+}
+
+function getPoint(point: Required<Point>, text: string, nodeStart: number, localTo: number): Required<Point> {
+  let { line, column, offset } = point;
+  const limit = Math.min(text.length, localTo);
+
+  const pointLocal = offset - nodeStart;
+  let lineStartLocal = pointLocal - (column - 1);
+  let index = text.indexOf('\n', pointLocal);
+  while (index !== -1 && index < limit) {
+    line++;
+    lineStartLocal = index + 1;
+    index = text.indexOf('\n', lineStartLocal);
+  }
+  column = limit - lineStartLocal + 1;
+
+  return {
+    line,
+    column,
+    offset: nodeStart + limit,
+  };
+}
+
+export function getAlertIcon(type: IconType, position?: Position): PhrasingContent {
   let pathD = pathData[type] ?? '';
   return {
     type: "emphasis",
@@ -113,6 +188,10 @@ export function getAlertIcon(type: IconType): PhrasingContent {
         ariaHidden: 'true',
       },
     },
+    position: position && {
+      start: { ...position.start },
+      end: { ...position.end },
+    },
     children: [
       {
         type: "emphasis",
@@ -122,6 +201,7 @@ export function getAlertIcon(type: IconType): PhrasingContent {
             d: pathD
           }
         },
+        position,
         children: []
       }
     ]
